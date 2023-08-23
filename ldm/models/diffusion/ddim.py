@@ -10,7 +10,7 @@ from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, mak
 class DDIMSampler(object):
     def __init__(self, model, schedule="linear", device=torch.device("cuda"), **kwargs):
         super().__init__()
-        self.model = model
+        self.model = model #MJ: = ldm.models.diffusion.ddpm.LatentInpaintDiffusion
         self.ddpm_num_timesteps = model.num_timesteps
         self.schedule = schedule
         self.device = device
@@ -20,7 +20,7 @@ class DDIMSampler(object):
             if attr.device != self.device:
                 attr = attr.to(self.device)
         setattr(self, name, attr)
-
+    #MJ: ddim_num_step = 50
     def make_schedule(self, ddim_num_steps, ddim_discretize="uniform", ddim_eta=0., verbose=True):
         self.ddim_timesteps = make_ddim_timesteps(ddim_discr_method=ddim_discretize, num_ddim_timesteps=ddim_num_steps,
                                                   num_ddpm_timesteps=self.ddpm_num_timesteps,verbose=verbose)
@@ -52,19 +52,36 @@ class DDIMSampler(object):
                         1 - self.alphas_cumprod / self.alphas_cumprod_prev))
         self.register_buffer('ddim_sigmas_for_original_num_steps', sigmas_for_original_sampling_steps)
 
+    #MJ: called by samples_cfg, intermediates = sampler.sample(
+            # ddim_steps,
+            # num_samples,
+            # shape,
+            # cond, #MJ:    cond = {"c_concat": [c_cat], "c_crossattn": [c]}
+        #     verbose=False,
+        #     eta=1.0,
+        #     unconditional_guidance_scale=scale,
+        #     unconditional_conditioning=uc_full,
+        #     x_T=start_code,
+        # ),
+        # where unconditional_conditioning is set to 
+        #      uc_full = {"c_concat": [c_cat], "c_crossattn": [uc_cross]},
+        #           where uc_cross = model.get_unconditional_conditioning(1, "")
+        
+        #MJ: Note that "classifier-free guidance" is not used if unconditional_conditioning = None 
+             
     @torch.no_grad()
     def sample(self,
-               S,
+               S, #MJ: == 50
                batch_size,
                shape,
-               conditioning=None,
+               conditioning=None,  #MJ: conditioning == cond
                callback=None,
                normals_sequence=None,
                img_callback=None,
                quantize_x0=False,
                eta=0.,
-               mask=None,
-               x0=None,
+               mask=None,  #MJ: mask is not defined in gradio/inpainting.py script
+               x0=None,    #MJ: x0 is not defined  in gradio/inpainting.py script
                temperature=1.,
                noise_dropout=0.,
                score_corrector=None,
@@ -100,7 +117,7 @@ class DDIMSampler(object):
         C, H, W = shape
         size = (batch_size, C, H, W)
         print(f'Data shape for DDIM sampling is {size}, eta {eta}')
-
+        #MJ: get  img (images for the text prompts), intermediates from   self.ddim_sampling:
         samples, intermediates = self.ddim_sampling(conditioning, size,
                                                     callback=callback,
                                                     img_callback=img_callback,
@@ -124,12 +141,14 @@ class DDIMSampler(object):
     def ddim_sampling(self, cond, shape,
                       x_T=None, ddim_use_original_steps=False,
                       callback=None, timesteps=None, quantize_denoised=False,
-                      mask=None, x0=None, img_callback=None, log_every_t=100,
+                      mask=None, x0=None, img_callback=None, log_every_t=100, #MJ: from T = 1000
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
                       unconditional_guidance_scale=1., unconditional_conditioning=None, dynamic_threshold=None,
                       ucg_schedule=None):
         device = self.model.betas.device
-        b = shape[0]
+        
+        b = shape[0]   #MJ: the batch size = the sample size
+        
         if x_T is None:
             img = torch.randn(shape, device=device)
         else:
@@ -141,26 +160,32 @@ class DDIMSampler(object):
             subset_end = int(min(timesteps / self.ddim_timesteps.shape[0], 1) * self.ddim_timesteps.shape[0]) - 1
             timesteps = self.ddim_timesteps[:subset_end]
 
+        #MJ: initialize the intermediates with the initial img:
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
+        
         time_range = reversed(range(0,timesteps)) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
-        print(f"Running DDIM Sampling with {total_steps} timesteps")
+        
+        print(f"Running DDIM Sampling with {total_steps} timesteps")  #MJ: 50 steps
 
         iterator = tqdm(time_range, desc='DDIM Sampler', total=total_steps)
 
         for i, step in enumerate(iterator):
-            index = total_steps - i - 1
+            index = total_steps - i - 1 #MJ: index = 50-0-1=49:.... 50-49-1 =0
             ts = torch.full((b,), step, device=device, dtype=torch.long)
 
-            if mask is not None:
-                assert x0 is not None
+            #MJ: The following paragraph is not relevant in gradio/inpainting.py script
+            if mask is not None: #MJ: mask is None in gradio/inpainting.py script
+                assert x0 is not None #MJ: x0 is None in gradio/inpainting.py script
+                #MJ: get the noisy version of the original image noised at level ts
                 img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
+                
                 img = img_orig * mask + (1. - mask) * img
 
             if ucg_schedule is not None:
                 assert len(ucg_schedule) == len(time_range)
-                unconditional_guidance_scale = ucg_schedule[i]
-
+                unconditional_guidance_scale = ucg_schedule[i] #The classifier-free guidance scale is different for each DDIM step
+            #MJ: img = x_T initially
             outs = self.p_sample_ddim(img, cond, ts, index=index, use_original_steps=ddim_use_original_steps,
                                       quantize_denoised=quantize_denoised, temperature=temperature,
                                       noise_dropout=noise_dropout, score_corrector=score_corrector,
@@ -169,13 +194,17 @@ class DDIMSampler(object):
                                       unconditional_conditioning=unconditional_conditioning,
                                       dynamic_threshold=dynamic_threshold)
             img, pred_x0 = outs
+            #MJ: x_prev, pred_x0 = outs; x_prev = img = the currently image being denoised
             if callback: callback(i)
             if img_callback: img_callback(pred_x0, i)
 
+            #MJ: save the x_inter = img and pred_x0 to intermediates
+            #MJ:  if True: to save every image being denoised ==> This is IMPORTANT for inspecting all the intermediate images being denoised
             if index % log_every_t == 0 or index == total_steps - 1:
                 intermediates['x_inter'].append(img)
                 intermediates['pred_x0'].append(pred_x0)
-
+        #for i, step in enumerate(iterator)
+        
         return img, intermediates
 
     @torch.no_grad()
@@ -185,9 +214,9 @@ class DDIMSampler(object):
                       dynamic_threshold=None):
         b, *_, device = *x.shape, x.device
 
-        if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-            model_output = self.model.apply_model(x, t, c)
-        else:
+        if unconditional_conditioning is None or unconditional_guidance_scale == 1.: #MJ: If not use classifer-free guidance
+            model_output = self.model.apply_model(x, t, c) #MJ: self.model.apply_model(x, t, c) =  unetModel(x,t,c)
+        else:  #MJ:  if use classifer-free guidance
             x_in = torch.cat([x] * 2)
             t_in = torch.cat([t] * 2)
             if isinstance(c, dict):
@@ -209,9 +238,16 @@ class DDIMSampler(object):
                     c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
             else:
                 c_in = torch.cat([unconditional_conditioning, c])
+                
             model_uncond, model_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
+            #MJ: self.model = ldm.models.diffusion.ddpm.LatentInpaintDiffusion
+            #MJ: combine the score of the conditional diffusion model and the score of the classifier-free guidance model
             model_output = model_uncond + unconditional_guidance_scale * (model_t - model_uncond)
-
+            #MJ: For the above formula,  cf. section 3. classifier-free guidance from https://sander.ai/2022/05/26/guidance.html
+            #MJ: also https://ai.stackexchange.com/questions/41730/justification-of-sclaing-in-classifier-free-guidance-in-diffusion-models#:~:text=%E2%88%87x%20log%20p%28xt%20%E2%88%A3%20y%29%20%3D%20%E2%88%87x%20log,%28x%20t%29%29%20and%20this%20is%20classifier%20free%20guidance.
+            # cf. formula (104 - 106) from https://www.calvinyluo.com/2022/08/26/diffusion-tutorial.html
+           
+            
         if self.model.parameterization == "v":
             e_t = self.model.predict_eps_from_z_and_v(x, t, model_output)
         else:

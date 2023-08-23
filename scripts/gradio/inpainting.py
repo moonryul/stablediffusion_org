@@ -23,10 +23,12 @@ def put_watermark(img, wm_encoder=None):
         img = Image.fromarray(img[:, :, ::-1])
     return img
 
-
+#MJ: sampler = initialize_model(sys.argv[1], sys.argv[2])
+# config = configs/stable-diffusion/v2-inpainting-inference.yaml
 def initialize_model(config, ckpt):
     config = OmegaConf.load(config)
     model = instantiate_from_config(config.model)
+    #MJ: model = ldm.models.diffusion.ddpm.LatentInpaintDiffusion
 
     model.load_state_dict(torch.load(ckpt)["state_dict"], strict=False)
 
@@ -77,19 +79,21 @@ def inpaint(sampler, image, mask, prompt, seed, scale, ddim_steps, num_samples=1
     wm_encoder.set_watermark('bytes', wm.encode('utf-8'))
 
     prng = np.random.RandomState(seed)
+    
     start_code = prng.randn(num_samples, 4, h // 8, w // 8)
     start_code = torch.from_numpy(start_code).to(
         device=device, dtype=torch.float32)
 
     with torch.no_grad(), \
             torch.autocast("cuda"):
+                
         batch = make_batch_sd(image, mask, txt=prompt,
                               device=device, num_samples=num_samples)
 
         c = model.cond_stage_model.encode(batch["txt"])
 
         c_cat = list()
-        for ck in model.concat_keys:
+        for ck in model.concat_keys: #MJ: model.concat_keys=["mask", "masked_image"]
             cc = batch[ck].float()
             if ck != model.masked_image_key:
                 bchw = [num_samples, 4, h // 8, w // 8]
@@ -112,7 +116,7 @@ def inpaint(sampler, image, mask, prompt, seed, scale, ddim_steps, num_samples=1
             ddim_steps,
             num_samples,
             shape,
-            cond,
+            cond, #MJ:    cond = {"c_concat": [c_cat], "c_crossattn": [c]}
             verbose=False,
             eta=1.0,
             unconditional_guidance_scale=scale,
@@ -156,7 +160,9 @@ def predict(input_image, prompt, ddim_steps, num_samples, scale, seed):
 
     return result
 
-
+# MJ: The inpainting.py script is invoked by 
+# python scripts/gradio/inpainting.py configs/stable-diffusion/v2-inpainting-inference.yaml <path-to-checkpoint>
+# from https://github.com/moonryul/stablediffusion_org
 sampler = initialize_model(sys.argv[1], sys.argv[2])
 
 block = gr.Blocks().queue()

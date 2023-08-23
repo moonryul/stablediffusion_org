@@ -790,7 +790,7 @@ class UNetModel(nn.Module):
 
         if self.num_classes is not None:
             assert y.shape[0] == x.shape[0]
-            emb = emb + self.label_emb(y)
+            emb = emb + self.label_emb(y)  #MJ: y is not None; When y = None, nothing is done with respect to y
 
         h = x.type(self.dtype)
         for module in self.input_blocks:

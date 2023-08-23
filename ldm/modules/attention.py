@@ -214,10 +214,17 @@ class MemoryEfficientCrossAttention(nn.Module):
         self.attention_op: Optional[Any] = None
 
     def forward(self, x, context=None, mask=None):
-        q = self.to_q(x)
-        context = default(context, x)
-        k = self.to_k(context)
-        v = self.to_v(context)
+        q = self.to_q(x)  #MJ: transform the latent x being denoised into the Query matrix for cross attention
+        context = default(context, x) #MJ: if context =None, return x
+        k = self.to_k(context)  
+        #MJ: When context is provided (context is not None), the cross-attention mechanism will use 
+        # the context to get the key tensor k. This means that the attention mechanism will be influenced 
+        # by the external context.
+        # When because context is None, it effectively becomes self-attention. 
+        #In self-attention, the queries, keys, and values are all derived from the same input sequence.
+        
+        
+        v = self.to_v(context)  #MJ: transform context to Value matrix
 
         b, _, _ = q.shape
         q, k, v = map(

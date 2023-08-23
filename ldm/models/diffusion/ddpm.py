@@ -844,7 +844,10 @@ class LatentDiffusion(DDPM):
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         return self.p_losses(x, c, t, *args, **kwargs)
-
+    
+    #MJ:  called by model_uncond, model_t = self.model.apply_model(x_in, t_in, c_in).chunk(2) from ddim.py,
+    # where self.model refers to     #MJ: model = ldm.models.diffusion.ddpm.LatentInpaintDiffusion. apply_model is a method of
+    # LatentDiffusion, it is inherited to its child LatentInpaintDiffusion
     def apply_model(self, x_noisy, t, cond, return_ids=False):
         if isinstance(cond, dict):
             # hybrid case, cond is expected to be a dict
@@ -856,6 +859,9 @@ class LatentDiffusion(DDPM):
             cond = {key: cond}
 
         x_recon = self.model(x_noisy, t, **cond)
+        #MJ:  self.model = DiffusionWrapper(unet_config, conditioning_key)
+        #  self.model(x_noisy, t, **cond) eventually calls the unet(x_noisy, t, **cond);
+        # See DiffusionWrapper class for details.
 
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]
@@ -1272,7 +1278,7 @@ class LatentDiffusion(DDPM):
             else:
                 return {key: log[key] for key in return_keys}
         return log
-
+    #MJ: mandatory method for Lightning module
     def configure_optimizers(self):
         lr = self.learning_rate
         params = list(self.model.parameters())
@@ -1306,12 +1312,12 @@ class LatentDiffusion(DDPM):
         x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
         return x
 
-
+#MJ: called by  self.model = DiffusionWrapper(unet_config, conditioning_key) in __init__() of DDPM:
 class DiffusionWrapper(pl.LightningModule):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
         self.sequential_cross_attn = diff_model_config.pop("sequential_crossattn", False)
-        self.diffusion_model = instantiate_from_config(diff_model_config)
+        self.diffusion_model = instantiate_from_config(diff_model_config) #MJ: diff_model_config = unet_config
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm', 'crossattn-adm']
 
@@ -1330,9 +1336,9 @@ class DiffusionWrapper(pl.LightningModule):
                 # TorchScript changes names of the arguments
                 # with argument cc defined as context=cc scripted model will produce
                 # an error: RuntimeError: forward() is missing value for argument 'argument_3'.
-                out = self.scripted_diffusion_model(x, t, cc)
+                out = self.scripted_diffusion_model(x, t, cc) #MJ: = unetmodel()
             else:
-                out = self.diffusion_model(x, t, context=cc)
+                out = self.diffusion_model(x, t, context=cc) #MJ: = unetmodel(x, t, context=cc)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
@@ -1641,7 +1647,8 @@ class LatentInpaintDiffusion(LatentFinetuneDiffusion):
     e.g. mask as concat and text via cross-attn.
     To disable finetuning mode, set finetune_keys to None
      """
-
+    #MJ: In config file, use conditionining_key: "concat" to use " pure inpainting model ";
+    #    use conditioning_key: "hybrid" to use "mixed conditionings"
     def __init__(self,
                  concat_keys=("mask", "masked_image"),
                  masked_image_key="masked_image",
@@ -1651,10 +1658,14 @@ class LatentInpaintDiffusion(LatentFinetuneDiffusion):
         self.masked_image_key = masked_image_key
         assert self.masked_image_key in concat_keys
 
+    
     @torch.no_grad()
     def get_input(self, batch, k, cond_key=None, bs=None, return_first_stage_outputs=False):
         # note: restricted to non-trainable encoders currently
         assert not self.cond_stage_trainable, 'trainable cond stages not yet supported for inpainting'
+        
+        #MJ: call the get_input of its parent:
+        
         z, c, x, xrec, xc = super().get_input(batch, self.first_stage_key, return_first_stage_outputs=True,
                                               force_c_encode=True, return_original_cond=True, bs=bs)
 
